@@ -1,0 +1,4 @@
+espeak-phonemizer
+torch
+numpy
+audiomentations
