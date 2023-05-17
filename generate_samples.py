@@ -2,6 +2,7 @@
 import argparse
 import itertools as it
 import json
+import logging
 import unicodedata
 import wave
 from pathlib import Path
@@ -13,6 +14,7 @@ from espeak_phonemizer import Phonemizer
 from piper_train.vits import commons
 
 _DIR = Path(__file__).parent
+_LOGGER = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -29,13 +31,17 @@ def main() -> None:
     parser.add_argument("--noise-scale-ws", nargs="+", type=float, default=[0.8])
     parser.add_argument("--output-dir", default="output")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.DEBUG)
 
+    _LOGGER.debug("Loading %s", args.model)
     model_path = Path(args.model)
     model = torch.load(model_path)
     model.eval()
+    _LOGGER.info("Successfully loaded %s", args.model)
 
     if torch.cuda.is_available():
         model.cuda()
+        _LOGGER.debug("CUDA available, using GPU")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -51,6 +57,7 @@ def main() -> None:
     phonemizer = Phonemizer(voice)
     phonemes_str = phonemizer.phonemize(args.text)
     phonemes = list(unicodedata.normalize("NFD", phonemes_str))
+    _LOGGER.debug("Phonemes: %s", phonemes)
 
     id_map = config["phoneme_id_map"]
     phoneme_ids = list(id_map["^"])
@@ -61,6 +68,7 @@ def main() -> None:
             phoneme_ids.extend(id_map["_"])
 
     phoneme_ids.extend(id_map["$"])
+    _LOGGER.debug("Phonemes ids: %s", phoneme_ids)
 
     max_len = None
 
@@ -77,6 +85,7 @@ def main() -> None:
 
     speakers_iter = it.product(range(num_speakers), range(num_speakers))
     speakers_batch = list(it.islice(speakers_iter, 0, args.batch_size))
+    batch_idx = 0
     while speakers_batch:
         if is_done:
             break
@@ -147,7 +156,11 @@ def main() -> None:
                     break
 
         # Next batch
+        _LOGGER.debug("Batch %s complete", batch_idx + 1)
         speakers_batch = list(it.islice(speakers_iter, 0, args.batch_size))
+        batch_idx += 1
+
+    _LOGGER.info("Done")
 
 
 def slerp(v1, v2, t, DOT_THR=0.9995, zdim=-1):

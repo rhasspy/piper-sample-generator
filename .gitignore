@@ -1,0 +1,11 @@
+.DS_Store
+.idea
+*.log
+tmp/
+
+.venv/
+__pycache__/
+.mypy_cache/
+*.pt
+
+output/

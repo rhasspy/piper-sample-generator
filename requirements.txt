@@ -1,4 +1,4 @@
-espeak-phonemizer
-torch
-numpy
 audiomentations
+espeak-phonemizer
+numpy
+torch
