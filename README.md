@@ -1,5 +1,7 @@
 # Piper Sample Generator
 
+Generates samples using [Piper](https://github.com/rhasspy/piper/) for training a wake word system like [openWakeWord](https://github.com/dscripka/openWakeWord).
+
 
 ## Install
 
@@ -18,7 +20,7 @@ python3 -m pip install -r requirements.txt
 Download the LibriTTS generator:
 
 ``` sh
-wget -O models/en-us-libritts-high.pt ''
+wget -O models/en-us-libritts-high.pt 'https://github.com/rhasspy/piper-sample-generator/releases/download/v1.0.0/en-us-libritts-high.pt'
 ```
 
 
