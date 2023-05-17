@@ -42,6 +42,8 @@ python3 generate_samples.py 'okay, piper.' --max-samples 100 --batch-size 10 --o
 
 On an NVidia 2080 Ti with 11GB, a batch size of 100 was possible (generating approximately 100 samples per second).
 
+Setting `--max-speakers` to a value less than 904 (the number if LibriTTS) is recommended. Because very few samples of later speakers were in the original dataset, using them can cause audio artifacts.
+
 See `--help` for more options, including adjust the `--length-scales` (speaking speeds) and `--slerp-weights` (speaker blending) which are cycled per batch.
 
 ### Augmentation

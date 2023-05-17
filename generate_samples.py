@@ -30,6 +30,11 @@ def main() -> None:
     parser.add_argument("--noise-scales", nargs="+", type=float, default=[0.667])
     parser.add_argument("--noise-scale-ws", nargs="+", type=float, default=[0.8])
     parser.add_argument("--output-dir", default="output")
+    parser.add_argument(
+        "--max-speakers",
+        type=int,
+        help="Maximum number of speakers to use (default: all)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG)
 
@@ -53,6 +58,8 @@ def main() -> None:
     voice = config["espeak"]["voice"]
     sample_rate = config["audio"]["sample_rate"]
     num_speakers = config["num_speakers"]
+    if args.max_speakers is not None:
+        num_speakers = min(num_speakers, args.max_speakers)
 
     phonemizer = Phonemizer(voice)
     phonemes_str = phonemizer.phonemize(args.text)
@@ -83,7 +90,7 @@ def main() -> None:
         )
     )
 
-    speakers_iter = it.product(range(num_speakers), range(num_speakers))
+    speakers_iter = it.cycle(it.product(range(num_speakers), range(num_speakers)))
     speakers_batch = list(it.islice(speakers_iter, 0, args.batch_size))
     batch_idx = 0
     while speakers_batch:
