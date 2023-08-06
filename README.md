@@ -46,7 +46,7 @@ Setting `--max-speakers` to a value less than 904 (the number if LibriTTS) is re
 
 See `--help` for more options, including adjust the `--length-scales` (speaking speeds) and `--slerp-weights` (speaker blending) which are cycled per batch.
 
-Alternatively, you can import the generate function into a another Python script:
+Alternatively, you can import the generate function into another Python script:
 
 ```python
 from generate_samples import generate_samples  # make sure to add this to your Python path as needed
