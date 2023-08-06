@@ -35,10 +35,11 @@ def generate_samples(
     noise_scales: List[float] = [0.667],
     noise_scale_ws: List[float] = [0.8],
     max_speakers: float = None,
+    verbose: bool = False,
     **kwargs
     ) -> None:
     """
-    Generate synthetic speech clips, saving the clips to the specified outpur directory.
+    Generate synthetic speech clips, saving the clips to the specified output directory.
 
     Args:
         text (List[str]): The text to convert into speech. Can be either a 
@@ -54,6 +55,7 @@ def generate_samples(
         noise_scales (List[float]): A parameter for overall variability of the generated speech.
         noise_scale_ws (List[float]): A parameter for the stochastic duration of words/phonemes.
         max_speakers (int): The maximum speaker number to use, if the model is multi-speaker.
+        verbose (bool): Enable or disable more detailed logging messages (default: False).
 
     Returns:
         None
@@ -130,17 +132,13 @@ def generate_samples(
             break
 
         batch_size = len(speakers_batch)
-        # slerp_weight, length_scale, noise_scale, noise_scale_w = next(settings_iter)
-        slerp_weight = np.random.choice(slerp_weights)
-        length_scale = np.random.choice(length_scales)
-        noise_scale = np.random.choice(noise_scales)
-        noise_scale_w = np.random.choice(noise_scale_ws)
+        slerp_weight, length_scale, noise_scale, noise_scale_w = next(settings_iter)
 
         with torch.no_grad():
             speaker_1 = torch.LongTensor([s[0] for s in speakers_batch])
             speaker_2 = torch.LongTensor([s[1] for s in speakers_batch])
 
-            phoneme_ids = [get_phonemes(phonemizer, config, next(texts))]*batch_size
+            phoneme_ids = [get_phonemes(phonemizer, config, next(texts), verbose)]*batch_size
             audio = generate_audio(model, speaker_1, speaker_2, phoneme_ids, slerp_weight, noise_scale, noise_scale_w, length_scale, max_len)
 
             # Resample audio
@@ -165,18 +163,18 @@ def generate_samples(
                     is_done = True
                     break
 
-            print(f"Batch {batch_idx +1}/{max_samples//batch_size} complete", " "*200, end='\r')
+            # print(f"Batch {batch_idx +1}/{max_samples//batch_size} complete", " "*200, end='\r')
 
         # Next batch
-        # _LOGGER.debug("Batch %s complete", batch_idx + 1)
+        _LOGGER.debug(f"Batch {batch_idx +1}/{max_samples//batch_size} complete")
         speakers_batch = list(it.islice(speakers_iter, 0, batch_size))
         batch_idx += 1
 
-    # _LOGGER.info("Done")
+    _LOGGER.info("Done")
 
 def generate_audio(model, speaker_1, speaker_2, phoneme_ids, slerp_weight, noise_scale, noise_scale_w, length_scale, max_len):
-    x = torch.LongTensor(phoneme_ids)#.repeat((batch_size, 1))
-    x_lengths = torch.LongTensor([len(i) for i in phoneme_ids])#.repeat(batch_size)
+    x = torch.LongTensor(phoneme_ids)
+    x_lengths = torch.LongTensor([len(i) for i in phoneme_ids])
 
     if torch.cuda.is_available():
         speaker_1 = speaker_1.cuda()
@@ -218,10 +216,11 @@ def generate_audio(model, speaker_1, speaker_2, phoneme_ids, slerp_weight, noise
     audio = o
     return audio
 
-def get_phonemes(phonemizer, config, text):
+def get_phonemes(phonemizer, config, text, verbose):
     phonemes_str = phonemizer.phonemize(text)
     phonemes = list(unicodedata.normalize("NFD", phonemes_str))
-    # _LOGGER.debug("Phonemes: %s", phonemes)
+    if verbose is True:
+        _LOGGER.debug("Phonemes: %s", phonemes)
 
     id_map = config["phoneme_id_map"]
     phoneme_ids = list(id_map["^"])
