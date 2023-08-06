@@ -26,7 +26,7 @@ wget -O models/en-us-libritts-high.pt 'https://github.com/rhasspy/piper-sample-g
 
 ## Run
 
-Generate a small set of samples:
+Generate a small set of samples with the CLI:
 
 ``` sh
 python3 generate_samples.py 'okay, piper.' --max-samples 10 --output-dir okay_piper/
@@ -45,6 +45,16 @@ On an NVidia 2080 Ti with 11GB, a batch size of 100 was possible (generating app
 Setting `--max-speakers` to a value less than 904 (the number if LibriTTS) is recommended. Because very few samples of later speakers were in the original dataset, using them can cause audio artifacts.
 
 See `--help` for more options, including adjust the `--length-scales` (speaking speeds) and `--slerp-weights` (speaker blending) which are cycled per batch.
+
+Alternatively, you can import the generate function into a another Python script:
+
+```python
+from generate_samples import generate_samples  # make sure to add this to your Python path as needed
+
+generate_samples(text = ["okay, piper"], max_samples = 100, output_dir = output_dir, batch_size=10)
+```
+
+There are some additional arguments available when importing the function directly, see the docstring of `generate_sample` for more information.
 
 ### Augmentation
 
