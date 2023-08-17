@@ -3,6 +3,7 @@ import argparse
 import itertools as it
 import json
 import os
+import gc
 import logging
 import unicodedata
 import wave
@@ -36,6 +37,7 @@ def generate_samples(
     noise_scale_ws: List[float] = [0.8],
     max_speakers: float = None,
     verbose: bool = False,
+    auto_reduce_batch_size: bool = False,
     **kwargs
     ) -> None:
     """
@@ -56,6 +58,8 @@ def generate_samples(
         noise_scale_ws (List[float]): A parameter for the stochastic duration of words/phonemes.
         max_speakers (int): The maximum speaker number to use, if the model is multi-speaker.
         verbose (bool): Enable or disable more detailed logging messages (default: False).
+        auto_reduce_batch_size (bool): Automatically and temporarily reduce the batch size
+                                       if CUDA OOM errors are detected, and try to resume generation.
 
     Returns:
         None
@@ -139,13 +143,26 @@ def generate_samples(
             speaker_2 = torch.LongTensor([s[1] for s in speakers_batch])
 
             phoneme_ids = [get_phonemes(phonemizer, config, next(texts), verbose)]*batch_size
-            audio = generate_audio(model, speaker_1, speaker_2, phoneme_ids, slerp_weight, noise_scale, noise_scale_w, length_scale, max_len)
+            if auto_reduce_batch_size:
+                oom_error = True
+                counter = 1
+                while oom_error is True:
+                    try:
+                        audio = generate_audio(model, speaker_1[0:batch_size//counter], speaker_2[0:batch_size//counter], phoneme_ids[0:batch_size//counter],
+                                               slerp_weight, noise_scale, noise_scale_w, length_scale, max_len)
+                        oom_error = False
+                    except torch.cuda.OutOfMemoryError:
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        counter += 1  # reduce batch size to avoid OOM errors
+            else:
+                audio = generate_audio(model, speaker_1, speaker_2, phoneme_ids, slerp_weight, noise_scale, noise_scale_w, length_scale, max_len)
 
             # Resample audio
             audio = resampler(audio.cpu()).numpy()
 
             audio_int16 = audio_float_to_int16(audio)
-            for audio_idx in range(batch_size):
+            for audio_idx in range(audio_int16.shape[0]):
                 if isinstance(file_names, it.cycle):
                     wav_path = output_dir / next(file_names)
                 else:
