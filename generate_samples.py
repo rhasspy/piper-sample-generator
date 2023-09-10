@@ -142,7 +142,18 @@ def generate_samples(
             speaker_1 = torch.LongTensor([s[0] for s in speakers_batch])
             speaker_2 = torch.LongTensor([s[1] for s in speakers_batch])
 
-            phoneme_ids = [get_phonemes(phonemizer, config, next(texts), verbose)]*batch_size
+            phoneme_ids = [get_phonemes(phonemizer, config, next(texts), verbose) for i in range(batch_size)]
+
+            def right_pad_lists(lists):
+                max_length = max(len(l) for l in lists)
+                padded_lists = []
+                for l in lists:
+                    padded_l = l + [1] * (max_length - len(l))  # phoneme 1 (corresponding to '^' character seems to work best)
+                    padded_lists.append(padded_l)
+                return padded_lists
+            
+            phoneme_ids = right_pad_lists(phoneme_ids)
+
             if auto_reduce_batch_size:
                 oom_error = True
                 counter = 1
