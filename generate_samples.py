@@ -11,6 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 from types import SimpleNamespace
 from typing import Union, List
+import webrtcvad
 
 import numpy as np
 import torch
@@ -174,6 +175,9 @@ def generate_samples(
 
             audio_int16 = audio_float_to_int16(audio)
             for audio_idx in range(audio_int16.shape[0]):
+                # Use webrtcvad to trip silence from the clips
+                audio_data = remove_silence(audio_int16[audio_idx].flatten())[None,]
+
                 if isinstance(file_names, it.cycle):
                     wav_path = output_dir / next(file_names)
                 else:
@@ -182,9 +186,7 @@ def generate_samples(
                     wav_file.setframerate(resample_rate)
                     wav_file.setsampwidth(2)
                     wav_file.setnchannels(1)
-                    wav_file.writeframes(audio_int16[audio_idx])
-
-                # print(wav_path)
+                    wav_file.writeframes(audio_data)
 
                 sample_idx += 1
                 if sample_idx >= max_samples:
@@ -199,6 +201,19 @@ def generate_samples(
         batch_idx += 1
 
     _LOGGER.info("Done")
+
+def remove_silence(x, frame_duration=.030, sample_rate=16000, min_start = 2000):
+    """Uses webrtc voice activity detection to remove silence from the clips"""
+    vad = webrtcvad.Vad(0)
+    if x.dtype == np.float32 or x.dtype == np.float64:
+        x = (x*32767).astype(np.int16)
+    x_new = x[0:min_start].tolist()
+    step_size = int(sample_rate*frame_duration)
+    for i in range(min_start, x.shape[0] - step_size, step_size):
+        vad_res = vad.is_speech(x[i:i+step_size].tobytes(), sample_rate)
+        if vad_res:
+            x_new.extend(x[i:i+step_size].tolist())
+    return np.array(x_new).astype(np.int16)
 
 def generate_audio(model, speaker_1, speaker_2, phoneme_ids, slerp_weight, noise_scale, noise_scale_w, length_scale, max_len):
     x = torch.LongTensor(phoneme_ids)

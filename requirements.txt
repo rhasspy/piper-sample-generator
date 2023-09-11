@@ -2,3 +2,4 @@ audiomentations
 espeak-phonemizer
 numpy
 torch
+webrtcvad
