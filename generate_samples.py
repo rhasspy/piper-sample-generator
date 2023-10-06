@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from espeak_phonemizer import Phonemizer
+from piper_phonemize import phonemize_espeak, phoneme_ids_espeak
 from piper_train.vits import commons
 
 _DIR = Path(__file__).parent
@@ -21,7 +21,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("text")
     parser.add_argument("--max-samples", required=True, type=int)
-    parser.add_argument("--model", default=_DIR / "models" / "en-us-libritts-high.pt")
+    parser.add_argument(
+        "--model", default=_DIR / "models" / "en_US-libritts_r-medium.pt"
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--slerp-weights", nargs="+", type=float, default=[0.5])
     parser.add_argument(
@@ -61,9 +63,12 @@ def main() -> None:
     if args.max_speakers is not None:
         num_speakers = min(num_speakers, args.max_speakers)
 
-    phonemizer = Phonemizer(voice)
-    phonemes_str = phonemizer.phonemize(args.text)
-    phonemes = list(unicodedata.normalize("NFD", phonemes_str))
+    # Combine all sentences
+    phonemes = [
+        p
+        for sentence_phonemes in phonemize_espeak(args.text, voice)
+        for p in sentence_phonemes
+    ]
     _LOGGER.debug("Phonemes: %s", phonemes)
 
     id_map = config["phoneme_id_map"]

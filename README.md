@@ -17,10 +17,10 @@ python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 ```
 
-Download the LibriTTS generator:
+Download the LibriTTS-R generator (exported from [checkpoint](https://huggingface.co/datasets/rhasspy/piper-checkpoints/tree/main/en/en_US/libritts_r/medium)):
 
 ``` sh
-wget -O models/en-us-libritts-high.pt 'https://github.com/rhasspy/piper-sample-generator/releases/download/v1.0.0/en-us-libritts-high.pt'
+wget -O models/en-us-libritts-high.pt 'https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt'
 ```
 
 
@@ -42,7 +42,7 @@ python3 generate_samples.py 'okay, piper.' --max-samples 100 --batch-size 10 --o
 
 On an NVidia 2080 Ti with 11GB, a batch size of 100 was possible (generating approximately 100 samples per second).
 
-Setting `--max-speakers` to a value less than 904 (the number if LibriTTS) is recommended. Because very few samples of later speakers were in the original dataset, using them can cause audio artifacts.
+Setting `--max-speakers` to a value less than 904 (the number of speakers LibriTTS) is recommended. Because very few samples of later speakers were in the original dataset, using them can cause audio artifacts.
 
 See `--help` for more options, including adjust the `--length-scales` (speaking speeds) and `--slerp-weights` (speaker blending) which are cycled per batch.
 

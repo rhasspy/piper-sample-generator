@@ -1,4 +1,4 @@
-audiomentations
-espeak-phonemizer
-numpy
+audiomentations==0.33.0
+piper-phonemize==1.1.0
+numpy<2
 torch
