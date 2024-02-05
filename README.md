@@ -2,6 +2,13 @@
 
 Generates samples using [Piper](https://github.com/rhasspy/piper/) for training a wake word system like [openWakeWord](https://github.com/dscripka/openWakeWord).
 
+Available models:
+
+* [English](https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt)
+* [French](https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/fr_FR-mls-medium.pt)
+* [German](https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/de_DE-mls-medium.pt)
+* [Dutch](https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/nl_NL-mls-medium.pt)
+
 
 ## Install
 
@@ -23,6 +30,7 @@ Download the LibriTTS-R generator (exported from [checkpoint](https://huggingfac
 wget -O models/en-us-libritts-high.pt 'https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt'
 ```
 
+See links above for models for other languages.
 
 ## Run
 
@@ -72,3 +80,28 @@ This will do several things to each sample:
     * Change the acoustics of the sample to sound like the speaker was in a room with echo or using a poor quality microphone
 3. Resample to 16Khz for training (e.g., [openWakeWord](https://github.com/dscripka/openWakeWord))
 
+
+## Short Phrases
+
+Models that were trained on audio books tend to perform poorly when speaking short phrases or single words.
+The French, German, and Dutch models trained from the [MLS](http://openslr.org/94/) have this problem.
+
+The problem can be mitigated by repeating the phrase over and over, and then clipping out a single sample.
+To do this automatically, follow these steps:
+
+1. Ensure your short phrase ends with a comma (`<phrase>,`)
+2. Lower the noise settings with `--noise-scales 0.333` and `--noise-scale-ws 0.333`
+3. Use `--min-phoneme-count 300` (the value 300 was determined empirically and may be less for some models)
+
+For example:
+
+``` sh
+python3 generate_samples.py \
+    'framboise,' \
+    --model models/fr_FR-mls-medium.pt \
+    --noise-scales 0.333 \
+    --noise-scale-ws 0.333 \
+    --min-phoneme-count 300 
+    --max-samples 1 \
+    --output-dir . 
+```
