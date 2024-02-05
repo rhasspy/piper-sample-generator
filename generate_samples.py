@@ -346,6 +346,7 @@ def get_phonemes(
 
     # Beginning of utterance
     phoneme_ids = list(id_map["^"])
+    phoneme_ids.extend(id_map["_"])
 
     # Phoneme ids for just the text
     text_phoneme_ids = []
