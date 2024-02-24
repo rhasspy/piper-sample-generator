@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torchaudio
-import webrtcvad
 from piper_phonemize import phonemize_espeak
 
 from piper_train.vits import commons
@@ -115,7 +114,7 @@ def generate_samples(
         resample_rate,
         lowpass_filter_width=64,
         rolloff=0.9475937167399596,
-        resampling_method="kaiser_window",
+        resampling_method="sinc_interp_kaiser",
         beta=14.769656459379492,
     )
 
@@ -207,23 +206,25 @@ def generate_samples(
             # Clip audio when using min_phoneme_count
             for i, clip_phoneme_index in enumerate(clip_indexes_by_batch):
                 if clip_phoneme_index is not None:
-                    last_sample_idx = int(
-                        phoneme_samples[i].flatten()[clip_phoneme_index:].sum().item()
+                    first_sample_idx = int(
+                        phoneme_samples[i].flatten()[:clip_phoneme_index-1].sum().item()
                     )
-
+                    
                     # Fill remainder of audio with silence.
                     # It will be removed in the next stage.
-                    audio[i, 0, :-last_sample_idx] = 0
+                    audio[i, 0, :first_sample_idx] = 0
+
+                # Fill time after last speech with silence.
+                # It will be removed in the next stage
+                last_sample_idx = int(phoneme_samples[i].flatten().sum().item())
+                audio[i, 0, last_sample_idx+1:] = 0
 
             # Resample audio
             audio = resampler(audio.cpu()).numpy()
 
             audio_int16 = audio_float_to_int16(audio)
             for audio_idx in range(audio_int16.shape[0]):
-                # Use webrtcvad to trip silence from the clips
-                audio_data = remove_silence(audio_int16[audio_idx].flatten())[
-                    None,
-                ]
+                audio_data = np.trim_zeros(audio_int16[audio_idx].flatten())
 
                 if isinstance(file_names, it.cycle):
                     wav_path = output_dir / next(file_names)
@@ -250,26 +251,6 @@ def generate_samples(
         batch_idx += 1
 
     _LOGGER.info("Done")
-
-
-def remove_silence(
-    x: np.ndarray,
-    frame_duration: float = 0.030,
-    sample_rate: int = 16000,
-    min_start: int = 2000,
-) -> np.ndarray:
-    """Uses webrtc voice activity detection to remove silence from the clips"""
-    vad = webrtcvad.Vad(0)
-    if x.dtype in (np.float32, np.float64):
-        x = (x * 32767).astype(np.int16)
-    x_new = x[0:min_start].tolist()
-    step_size = int(sample_rate * frame_duration)
-    for i in range(min_start, x.shape[0] - step_size, step_size):
-        vad_res = vad.is_speech(x[i : i + step_size].tobytes(), sample_rate)
-        if vad_res:
-            x_new.extend(x[i : i + step_size].tolist())
-    return np.array(x_new).astype(np.int16)
-
 
 def generate_audio(
     model,
