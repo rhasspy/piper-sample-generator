@@ -115,7 +115,7 @@ def generate_samples(
         resample_rate,
         lowpass_filter_width=64,
         rolloff=0.9475937167399596,
-        resampling_method="kaiser_window",
+        resampling_method="sinc_interp_kaiser",
         beta=14.769656459379492,
     )
 
@@ -207,20 +207,28 @@ def generate_samples(
             # Clip audio when using min_phoneme_count
             for i, clip_phoneme_index in enumerate(clip_indexes_by_batch):
                 if clip_phoneme_index is not None:
-                    last_sample_idx = int(
-                        phoneme_samples[i].flatten()[clip_phoneme_index:].sum().item()
+                    first_sample_idx = int(
+                        phoneme_samples[i].flatten()[:clip_phoneme_index-1].sum().item()
                     )
-
-                    # Fill remainder of audio with silence.
+                    
+                    # Fill start of audio with silence until actual sample.
                     # It will be removed in the next stage.
-                    audio[i, 0, :-last_sample_idx] = 0
+                    audio[i, 0, :first_sample_idx] = 0
+
+                # Fill time after last speech with silence.
+                # It will be removed in the next stage
+                last_sample_idx = int(phoneme_samples[i].flatten().sum().item())
+                audio[i, 0, last_sample_idx+1:] = 0
 
             # Resample audio
             audio = resampler(audio.cpu()).numpy()
 
             audio_int16 = audio_float_to_int16(audio)
             for audio_idx in range(audio_int16.shape[0]):
-                # Use webrtcvad to trip silence from the clips
+                # Trim any silenced audio
+                audio_data = np.trim_zeros(audio_int16[audio_idx].flatten())
+                
+                # Use webrtcvad to trim any remaining silence from the clips
                 audio_data = remove_silence(audio_int16[audio_idx].flatten())[
                     None,
                 ]
