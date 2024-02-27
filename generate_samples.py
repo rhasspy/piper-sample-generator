@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torchaudio
+import webrtcvad
 from piper_phonemize import phonemize_espeak
 
 from piper_train.vits import commons
@@ -210,7 +211,7 @@ def generate_samples(
                         phoneme_samples[i].flatten()[:clip_phoneme_index-1].sum().item()
                     )
                     
-                    # Fill remainder of audio with silence.
+                    # Fill start of audio with silence until actual sample.
                     # It will be removed in the next stage.
                     audio[i, 0, :first_sample_idx] = 0
 
@@ -224,7 +225,13 @@ def generate_samples(
 
             audio_int16 = audio_float_to_int16(audio)
             for audio_idx in range(audio_int16.shape[0]):
+                # Trim any silenced audio
                 audio_data = np.trim_zeros(audio_int16[audio_idx].flatten())
+                
+                # Use webrtcvad to trim any remaining silence from the clips
+                audio_data = remove_silence(audio_int16[audio_idx].flatten())[
+                    None,
+                ]
 
                 if isinstance(file_names, it.cycle):
                     wav_path = output_dir / next(file_names)
@@ -251,6 +258,26 @@ def generate_samples(
         batch_idx += 1
 
     _LOGGER.info("Done")
+
+
+def remove_silence(
+    x: np.ndarray,
+    frame_duration: float = 0.030,
+    sample_rate: int = 16000,
+    min_start: int = 2000,
+) -> np.ndarray:
+    """Uses webrtc voice activity detection to remove silence from the clips"""
+    vad = webrtcvad.Vad(0)
+    if x.dtype in (np.float32, np.float64):
+        x = (x * 32767).astype(np.int16)
+    x_new = x[0:min_start].tolist()
+    step_size = int(sample_rate * frame_duration)
+    for i in range(min_start, x.shape[0] - step_size, step_size):
+        vad_res = vad.is_speech(x[i : i + step_size].tobytes(), sample_rate)
+        if vad_res:
+            x_new.extend(x[i : i + step_size].tolist())
+    return np.array(x_new).astype(np.int16)
+
 
 def generate_audio(
     model,
