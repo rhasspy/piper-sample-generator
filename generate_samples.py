@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import functools
 import gc
 import itertools as it
 import json
 import logging
 import os
+import pickle
 import wave
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -20,6 +22,40 @@ from piper_train.vits import commons
 _DIR = Path(__file__).parent
 _LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
+
+
+def pickle_cache(base_dir):
+    """
+    Decorator that create a pickle cache in base_dir and caches the results of calls to the decorated function.
+    Cache keys are derived from the positional and keyword arguments passed to the decorated function.
+    """
+    base_dir = Path(base_dir)
+    if not base_dir.exists():
+        base_dir.mkdir(0o755)
+
+    def _decorator(f):
+        @functools.wraps(f)
+        def _do_function_cache(*func_args, **func_kwargs):
+            func_partial = functools.partial(f, *func_args, **func_kwargs)
+            cache_key = hex(hash(func_partial))
+            cache_file = base_dir / cache_key
+
+            if cache_file.exists():
+                try:
+                    with cache_file.open("rb") as cf:
+                        return pickle.load(cf)
+                except Exception as e:
+                    _LOGGER.warning(f"Failed to deserialize pickle_cache entry, falling back to generation\n%s", str(e))
+
+            result = func_partial()
+            with cache_file.open("wb") as cf:
+                pickle.dump(result, cf)
+
+            return result
+
+        return _do_function_cache
+
+    return _decorator
 
 
 # Main generation function
@@ -279,6 +315,7 @@ def remove_silence(
     return np.array(x_new).astype(np.int16)
 
 
+@pickle_cache(".audio-cache")
 def generate_audio(
     model,
     speaker_1,
@@ -334,6 +371,7 @@ def generate_audio(
     return audio, phoneme_samples
 
 
+@pickle_cache(".phoneme-cache")
 def get_phonemes(
     voice: str,
     config: Dict[str, Any],
