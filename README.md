@@ -14,7 +14,7 @@ Available models:
 
 Create a virtual environment and install the requirements:
 
-``` sh
+```sh
 git clone https://github.com/rhasspy/piper-sample-generator.git
 cd piper-sample-generator/
 
@@ -26,7 +26,7 @@ python3 -m pip install -r requirements.txt
 
 Download the LibriTTS-R generator (exported from [checkpoint](https://huggingface.co/datasets/rhasspy/piper-checkpoints/tree/main/en/en_US/libritts_r/medium)):
 
-``` sh
+```sh
 wget -O models/en-us-libritts-high.pt 'https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt'
 ```
 
@@ -36,15 +36,17 @@ See links above for models for other languages.
 
 Generate a small set of samples with the CLI:
 
-``` sh
+```sh
 python3 generate_samples.py 'okay, piper.' --max-samples 10 --output-dir okay_piper/
+# or
+python generate_samples.py "Clarisse" --max-samples 100 --model models/pt_PT-tugao-medium.onnx --output-dir output
 ```
 
 Check the `okay_piper/` directory for 10 WAV files (named `0.wav` to `9.wav`).
 
 Generation can be much faster and more efficient if you have a GPU available and PyTorch is configured to use it. In this case, increase the batch size:
 
-``` sh
+```sh
 python3 generate_samples.py 'okay, piper.' --max-samples 100 --batch-size 10 --output-dir okay_piper/
 ```
 
@@ -68,7 +70,7 @@ There are some additional arguments available when importing the function direct
 
 Once you have samples generating, you can augment them using [audiomentation](https://iver56.github.io/audiomentations/):
 
-``` sh
+```sh
 python3 augment.py --sample-rate 16000 okay_piper/ okay_piper_augmented/
 ```
 
@@ -95,13 +97,27 @@ To do this automatically, follow these steps:
 
 For example:
 
-``` sh
+```sh
 python3 generate_samples.py \
     'framboise,' \
     --model models/fr_FR-mls-medium.pt \
     --noise-scales 0.333 \
     --noise-scale-ws 0.333 \
-    --min-phoneme-count 300 
+    --min-phoneme-count 300 \
     --max-samples 1 \
     --output-dir . 
+```
+
+or 
+
+```sh
+#! This seems to create files without any audio at all.
+python3 generate_samples.py \
+    'clarisse,' \
+    --model models/pt_PT-tugao-medium.onnx \
+    --noise-scales 0.333 \
+    --noise-scale-ws 0.333 \
+    --min-phoneme-count 300 \
+    --max-samples 30 \
+    --output-dir output
 ```
