@@ -4,3 +4,4 @@ numpy<2
 torch<2
 torchaudio
 webrtcvad
+onnxruntime

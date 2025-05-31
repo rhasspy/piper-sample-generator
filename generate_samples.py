@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torchaudio
 import webrtcvad
+import onnxruntime as ort
 from piper_phonemize import phonemize_espeak
 
 from piper_train.vits import commons
@@ -73,13 +74,24 @@ def generate_samples(
     _LOGGER.debug("Loading %s", model)
     model_path = Path(model)
 
-    torch_model = torch.load(model_path)
-    torch_model.eval()
-    _LOGGER.info("Successfully loaded the model")
+    # Detect model type based on file extension
+    is_onnx = model_path.suffix.lower() == ".onnx"
 
-    if torch.cuda.is_available():
-        torch_model.cuda()
-        _LOGGER.debug("CUDA available, using GPU")
+    if is_onnx:
+        # Load ONNX model
+        onnx_model = ort.InferenceSession(str(model_path))
+        torch_model = None
+        _LOGGER.info("Successfully loaded ONNX model")
+    else:
+        # Load PyTorch model
+        torch_model = torch.load(model_path, weights_only=False) #! My change
+        torch_model.eval()
+        onnx_model = None
+        _LOGGER.info("Successfully loaded PyTorch model")
+
+        if torch.cuda.is_available():
+            torch_model.cuda()
+            _LOGGER.debug("CUDA available, using GPU")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -115,7 +127,8 @@ def generate_samples(
         resample_rate,
         lowpass_filter_width=64,
         rolloff=0.9475937167399596,
-        resampling_method="sinc_interp_kaiser",
+        # resampling_method="sinc_interp_kaiser",
+        resampling_method="sinc_interpolation",
         beta=14.769656459379492,
     )
 
@@ -177,6 +190,7 @@ def generate_samples(
                     try:
                         audio, phoneme_samples = generate_audio(
                             torch_model,
+                            onnx_model,
                             speaker_1[0 : batch_size // counter],
                             speaker_2[0 : batch_size // counter],
                             phoneme_ids_by_batch[0 : batch_size // counter],
@@ -194,6 +208,7 @@ def generate_samples(
             else:
                 audio, phoneme_samples = generate_audio(
                     torch_model,
+                    onnx_model,
                     speaker_1,
                     speaker_2,
                     phoneme_ids_by_batch,
@@ -208,9 +223,12 @@ def generate_samples(
             for i, clip_phoneme_index in enumerate(clip_indexes_by_batch):
                 if clip_phoneme_index is not None:
                     first_sample_idx = int(
-                        phoneme_samples[i].flatten()[:clip_phoneme_index-1].sum().item()
+                        phoneme_samples[i]
+                        .flatten()[: clip_phoneme_index - 1]
+                        .sum()
+                        .item()
                     )
-                    
+
                     # Fill start of audio with silence until actual sample.
                     # It will be removed in the next stage.
                     audio[i, 0, :first_sample_idx] = 0
@@ -218,7 +236,7 @@ def generate_samples(
                 # Fill time after last speech with silence.
                 # It will be removed in the next stage
                 last_sample_idx = int(phoneme_samples[i].flatten().sum().item())
-                audio[i, 0, last_sample_idx+1:] = 0
+                audio[i, 0, last_sample_idx + 1 :] = 0
 
             # Resample audio
             audio = resampler(audio.cpu()).numpy()
@@ -227,11 +245,9 @@ def generate_samples(
             for audio_idx in range(audio_int16.shape[0]):
                 # Trim any silenced audio
                 audio_data = np.trim_zeros(audio_int16[audio_idx].flatten())
-                
+
                 # Use webrtcvad to trim any remaining silence from the clips
-                audio_data = remove_silence(audio_int16[audio_idx].flatten())[
-                    None,
-                ]
+                audio_data = remove_silence(audio_int16[audio_idx].flatten())[None,]
 
                 if isinstance(file_names, it.cycle):
                     wav_path = output_dir / next(file_names)
@@ -280,6 +296,44 @@ def remove_silence(
 
 
 def generate_audio(
+    torch_model,
+    onnx_model,
+    speaker_1,
+    speaker_2,
+    phoneme_ids,
+    slerp_weight,
+    noise_scale,
+    noise_scale_w,
+    length_scale,
+    max_len,
+):
+    if onnx_model is not None:
+        return generate_audio_onnx(
+            onnx_model,
+            speaker_1,
+            speaker_2,
+            phoneme_ids,
+            slerp_weight,
+            noise_scale,
+            noise_scale_w,
+            length_scale,
+            max_len,
+        )
+    else:
+        return generate_audio_pytorch(
+            torch_model,
+            speaker_1,
+            speaker_2,
+            phoneme_ids,
+            slerp_weight,
+            noise_scale,
+            noise_scale_w,
+            length_scale,
+            max_len,
+        )
+
+
+def generate_audio_pytorch(
     model,
     speaker_1,
     speaker_2,
@@ -330,6 +384,50 @@ def generate_audio(
 
     audio = o
     phoneme_samples = w_ceil * 256  # hop length
+
+    return audio, phoneme_samples
+
+
+def generate_audio_onnx(
+    model,
+    speaker_1,
+    speaker_2,
+    phoneme_ids,
+    slerp_weight,
+    noise_scale,
+    noise_scale_w,
+    length_scale,
+    max_len,
+):
+    # Convert inputs to numpy arrays for ONNX
+    x = np.array(phoneme_ids, dtype=np.int64)
+    x_lengths = np.array([len(i) for i in phoneme_ids], dtype=np.int64)
+
+    # This ONNX model appears to be single-speaker, so speaker mixing is not supported
+    # The scales array contains [noise_scale, length_scale, noise_scale_w]
+
+    # Prepare ONNX inputs (based on model inspection)
+    inputs = {
+        "input": x,
+        "input_lengths": x_lengths,
+        "scales": np.array(
+            [noise_scale, length_scale, noise_scale_w], dtype=np.float32
+        ),
+    }
+
+    # Run ONNX inference
+    outputs = model.run(None, inputs)
+
+    # Convert outputs back to torch tensors for compatibility with the rest of the pipeline
+    audio = torch.from_numpy(outputs[0])
+
+    # Generate phoneme samples (this is an approximation for ONNX models)
+    # The exact phoneme timing might differ from PyTorch models
+    batch_size = len(phoneme_ids)
+    max_phoneme_len = max(len(p) for p in phoneme_ids)
+    phoneme_samples = torch.ones(batch_size, 1, max_phoneme_len) * (
+        audio.shape[-1] / max_phoneme_len
+    )
 
     return audio, phoneme_samples
 
