@@ -73,7 +73,7 @@ def generate_samples(
     _LOGGER.debug("Loading %s", model)
     model_path = Path(model)
 
-    torch_model = torch.load(model_path)
+    torch_model = torch.load(model_path, weights_only=False)
     torch_model.eval()
     _LOGGER.info("Successfully loaded the model")
 
