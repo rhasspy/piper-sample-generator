@@ -26,9 +26,9 @@ logging.basicConfig(level=logging.DEBUG)
 def generate_samples(
     text: Union[List[str], str],
     output_dir: Union[str, Path],
+    model: Union[str, Path],
     max_samples: Optional[int] = None,
     file_names: Optional[Iterable[str]] = None,
-    model: Union[str, Path] = _DIR / "models" / "en_US-libritts_r-medium.pt",
     batch_size: int = 1,
     slerp_weights: Tuple[float, ...] = (0.5,),
     length_scales: Tuple[float, ...] = (0.75, 1, 1.25),
@@ -45,10 +45,10 @@ def generate_samples(
         text (List[str]): The text to convert into speech. Can be either a
                           a list of strings, or a path to a file with text on each line.
         output_dir (str): The location to save the generated clips.
+        model (str): The path to the TTS generator model (.pt).
         max_samples (int): The maximum number of samples to generate.
         file_names (List[str]): The names to use when saving the files. Must be the same length
                                 as the `text` argument, if a list.
-        model (str): The path to the TTS generator model (.pt).
         batch_size (int): The batch size to use when generated the clips
         slerp_weights (List[float]): The weights to use when mixing speakers via SLERP.
         length_scales (List[float]): Controls the average duration/speed of the generated speech.
@@ -100,17 +100,6 @@ def generate_samples(
         )
     )
 
-    # Define resampler to get to 16khz (https://pytorch.org/audio/stable/tutorials/audio_resampling_tutorial.html#kaiser-best)
-    resample_rate = 16000
-    resampler = torchaudio.transforms.Resample(
-        sample_rate,
-        resample_rate,
-        lowpass_filter_width=64,
-        rolloff=0.9475937167399596,
-        # resampling_method="sinc_interp_kaiser",
-        beta=14.769656459379492,
-    )
-
     speakers_iter = it.cycle(it.product(range(num_speakers), range(num_speakers)))
     speakers_batch = list(it.islice(speakers_iter, 0, batch_size))
     if isinstance(text, str) and os.path.exists(text):
@@ -157,22 +146,23 @@ def generate_samples(
                 return padded_lists
 
             phoneme_ids_by_batch = right_pad_lists(phoneme_ids_by_batch)
-            audio = generate_audio(
-                torch_model,
-                speaker_1,
-                speaker_2,
-                phoneme_ids_by_batch,
-                slerp_weight,
-                noise_scale,
-                noise_scale_w,
-                length_scale,
-                max_len,
+            audio = (
+                generate_audio(
+                    torch_model,
+                    speaker_1,
+                    speaker_2,
+                    phoneme_ids_by_batch,
+                    slerp_weight,
+                    noise_scale,
+                    noise_scale_w,
+                    length_scale,
+                    max_len,
+                )
+                .cpu()
+                .numpy()
             )
 
-            # Resample audio
-            audio_np = resampler(audio.cpu()).numpy()
-
-            audio_int16 = audio_float_to_int16(audio_np)
+            audio_int16 = audio_float_to_int16(audio)
             for audio_idx in range(audio_int16.shape[0]):
                 audio_data = np.trim_zeros(audio_int16[audio_idx].flatten())
 
@@ -183,7 +173,7 @@ def generate_samples(
 
                 wav_file: wave.Wave_write = wave.open(str(wav_path), "wb")
                 with wav_file:
-                    wav_file.setframerate(resample_rate)
+                    wav_file.setframerate(sample_rate)
                     wav_file.setsampwidth(2)
                     wav_file.setnchannels(1)
                     wav_file.writeframes(audio_data)
@@ -209,7 +199,7 @@ def generate_samples(
 def generate_samples_onnx(
     text: Union[List[str], str],
     output_dir: Union[str, Path],
-    model: Union[str, Path],
+    model: Union[str, Path, List[Union[str, Path]]],
     max_samples: Optional[int] = None,
     file_names: Optional[Iterable[str]] = None,
     length_scales: Tuple[float, ...] = (0.75, 1, 1.25),
@@ -241,21 +231,20 @@ def generate_samples_onnx(
     if max_samples is None:
         max_samples = len(text)
 
+    if not isinstance(model, list):
+        model = [model]
+
     _LOGGER.debug("Loading %s", model)
-    voice = PiperVoice.load(model, use_cuda=torch.cuda.is_available())
-    _LOGGER.info("Successfully loaded the model")
+    voices = [PiperVoice.load(m, use_cuda=torch.cuda.is_available()) for m in model]
+    _LOGGER.info("Successfully loaded model(s)")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    num_speakers = voice.config.num_speakers
-    if max_speakers is not None:
-        num_speakers = min(num_speakers, max_speakers)
-
     sample_idx = 0
     settings_iter = it.cycle(
         it.product(
-            list(range(num_speakers)),
+            voices,
             length_scales,
             noise_scales,
             noise_scale_ws,
@@ -278,27 +267,32 @@ def generate_samples_onnx(
     if file_names:
         file_names = it.cycle(file_names)
 
-    for speaker_id, length_scale, noise_scale, noise_w_scale in settings_iter:
-        if isinstance(file_names, it.cycle):
-            wav_path = output_dir / next(file_names)
-        else:
-            wav_path = output_dir / f"{sample_idx}.wav"
+    for voice, length_scale, noise_scale, noise_w_scale in settings_iter:
+        num_speakers = voice.config.num_speakers
+        if max_speakers is not None:
+            num_speakers = min(num_speakers, max_speakers)
 
-        wav_file: wave.Wave_write = wave.open(str(wav_path), "wb")
-        voice.synthesize_wav(
-            next(texts),
-            wav_file=wav_file,
-            syn_config=SynthesisConfig(
-                speaker_id=speaker_id,
-                length_scale=length_scale,
-                noise_scale=noise_scale,
-                noise_w_scale=noise_w_scale,
-            ),
-        )
+        for speaker_id in range(num_speakers):
+            if isinstance(file_names, it.cycle):
+                wav_path = output_dir / next(file_names)
+            else:
+                wav_path = output_dir / f"{sample_idx}.wav"
 
-        sample_idx += 1
-        if sample_idx >= max_samples:
-            break
+            wav_file: wave.Wave_write = wave.open(str(wav_path), "wb")
+            voice.synthesize_wav(
+                next(texts),
+                wav_file=wav_file,
+                syn_config=SynthesisConfig(
+                    speaker_id=speaker_id,
+                    length_scale=length_scale,
+                    noise_scale=noise_scale,
+                    noise_w_scale=noise_w_scale,
+                ),
+            )
+
+            sample_idx += 1
+            if sample_idx >= max_samples:
+                return
 
     _LOGGER.info("Done")
 
@@ -459,45 +453,92 @@ def audio_float_to_int16(
 # -----------------------------------------------------------------------------
 
 
-def main() -> None:
+def main() -> int:
     """Main entry point."""
 
     # Get command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("text")
-    parser.add_argument("--max-samples", required=True, type=int)
     parser.add_argument(
-        "--model", default=_DIR / "models" / "en_US-libritts_r-medium.pt"
+        "--max-samples",
+        required=True,
+        type=int,
+        help="Maximum number of samples to generate",
     )
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--slerp-weights", nargs="+", type=float, default=[0.5])
     parser.add_argument(
-        "--length-scales", nargs="+", type=float, default=[1.0, 0.75, 1.25, 1.4]
+        "--model",
+        required=True,
+        action="append",
+        help="Path to PyTorch generator (.pt) or Piper voice model (.onnx)",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=1, help="CUDA batch size (generator only)"
+    )
+    parser.add_argument(
+        "--slerp-weights",
+        nargs="+",
+        type=float,
+        default=[0.5],
+        help="Speaker blending weights (generator only)",
+    )
+    parser.add_argument(
+        "--length-scales",
+        nargs="+",
+        type=float,
+        default=[1.0, 0.75, 1.25, 1.4],
+        help="Audio length scales (< 1 is faster, > 1 is slower)",
     )
     parser.add_argument(
         "--noise-scales",
         nargs="+",
         type=float,
         default=[0.667, 0.75, 0.85, 0.9, 1.0, 1.4],
+        help="Noise amounts added to audio (most voices use 0.667)",
     )
-    parser.add_argument("--noise-scale-ws", nargs="+", type=float, default=[0.8])
-    parser.add_argument("--output-dir", default="output")
+    parser.add_argument(
+        "--noise-scale-ws",
+        nargs="+",
+        type=float,
+        default=[0.8],
+        help="Phoneme width variation (most voices use 0.8)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="output",
+        help="Directory to output WAV files (default: ./output)",
+    )
     parser.add_argument(
         "--max-speakers",
         type=int,
-        help="Maximum number of speakers to use (default: all)",
+        help="Maximum number of speakers to use (default: no limit)",
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args().__dict__
 
     # Generate speech
-    model_path = Path(args["model"])
-    if model_path.suffix == ".onnx":
+    model_paths = [Path(m) for m in args["model"]]
+    assert model_paths
+
+    if any(mp for mp in model_paths[1:] if mp.suffix != model_paths[0].suffix):
+        _LOGGER.error("All models must have the same suffix (.pt or .onnx)")
+        return 1
+
+    if model_paths[0].suffix == ".onnx":
         # Use Piper voice (.onnx)
         generate_samples_onnx(**args)
-    else:
+    elif model_paths[0].suffix == ".pt":
         # Use PyTorch generator (.pt)
+        if len(model_paths) > 1:
+            _LOGGER.error("Only one generator (.pt) is supported")
+            return 1
+
+        args["model"] = args["model"][0]
         generate_samples(**args)
+    else:
+        _LOGGER.error("Models must have .pt or .onnx suffix")
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":

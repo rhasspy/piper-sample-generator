@@ -22,7 +22,7 @@ def main() -> None:
 
     augment = Compose(
         transforms=[
-            Gain(min_gain_in_db=-12, max_gain_in_db=0),
+            Gain(min_gain_db=-12, max_gain_db=0),
             ApplyImpulseResponse(impulses),
         ]
     )
