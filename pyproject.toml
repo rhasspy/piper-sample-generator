@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=62.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name        = "piper-sample-generator"
+version     = "3.0.0"
+license     = {text = "Apache-2.0"}
+description = "Generate TTS audio samples for training wake word systems"
+readme      = "README.md"
+authors     = [
+    {name = "The Home Assistant Authors", email = "hello@home-assistant.io"}
+]
+keywords    = ["piper", "sample", "tts", "wakeword"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Text Processing :: Linguistic",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+requires-python = ">=3.9.0"
+dependencies = [
+    "piper-tts>=1.3.0,<2",
+    "torch>=2,<3",
+    "torchaudio",
+    "audiomentations",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black==24.8.0",
+    "flake8==7.2.0",
+    "mypy==1.14.0",
+    "pylint==3.2.7",
+    "pytest==8.3.5",
+]
+
+[project.urls]
+"Source Code" = "http://github.com/rhasspy/piper-sample-generator"
+
+[tool.setuptools]
+platforms = ["any"]
+zip-safe  = true
+
+[tool.setuptools.packages.find]
+include = []

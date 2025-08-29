@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 import argparse
-import gc
 import itertools as it
 import json
 import logging
 import os
 import wave
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import torch
 import torchaudio
-import webrtcvad
-from piper_phonemize import phonemize_espeak
+from piper import PiperVoice, SynthesisConfig
+from piper.phonemize_espeak import EspeakPhonemizer
 
 from piper_train.vits import commons
 
@@ -27,17 +27,15 @@ def generate_samples(
     text: Union[List[str], str],
     output_dir: Union[str, Path],
     max_samples: Optional[int] = None,
-    file_names: Optional[List[str]] = None,
+    file_names: Optional[Iterable[str]] = None,
     model: Union[str, Path] = _DIR / "models" / "en_US-libritts_r-medium.pt",
     batch_size: int = 1,
     slerp_weights: Tuple[float, ...] = (0.5,),
     length_scales: Tuple[float, ...] = (0.75, 1, 1.25),
     noise_scales: Tuple[float, ...] = (0.667,),
     noise_scale_ws: Tuple[float, ...] = (0.8,),
-    max_speakers: Optional[float] = None,
+    max_speakers: Optional[int] = None,
     verbose: bool = False,
-    auto_reduce_batch_size: bool = False,
-    min_phoneme_count: Optional[int] = None,
     **kwargs,
 ) -> None:
     """
@@ -50,7 +48,7 @@ def generate_samples(
         max_samples (int): The maximum number of samples to generate.
         file_names (List[str]): The names to use when saving the files. Must be the same length
                                 as the `text` argument, if a list.
-        model (str): The path to the STT model to use for generation.
+        model (str): The path to the TTS generator model (.pt).
         batch_size (int): The batch size to use when generated the clips
         slerp_weights (List[float]): The weights to use when mixing speakers via SLERP.
         length_scales (List[float]): Controls the average duration/speed of the generated speech.
@@ -58,11 +56,6 @@ def generate_samples(
         noise_scale_ws (List[float]): A parameter for the stochastic duration of words/phonemes.
         max_speakers (int): The maximum speaker number to use, if the model is multi-speaker.
         verbose (bool): Enable or disable more detailed logging messages (default: False).
-        auto_reduce_batch_size (bool): Automatically and temporarily reduce the batch size
-                                       if CUDA OOM errors are detected, and try to resume generation.
-        min_phoneme_count (int): If set, ensure this number of phonemes is always sent to the model.
-                                 Clip audio to extract original phrase.
-
     Returns:
         None
     """
@@ -73,7 +66,7 @@ def generate_samples(
     _LOGGER.debug("Loading %s", model)
     model_path = Path(model)
 
-    torch_model = torch.load(model_path)
+    torch_model = torch.load(model_path, weights_only=False)
     torch_model.eval()
     _LOGGER.info("Successfully loaded the model")
 
@@ -108,14 +101,13 @@ def generate_samples(
     )
 
     # Define resampler to get to 16khz (https://pytorch.org/audio/stable/tutorials/audio_resampling_tutorial.html#kaiser-best)
-    sample_rate = 22050
     resample_rate = 16000
     resampler = torchaudio.transforms.Resample(
         sample_rate,
         resample_rate,
         lowpass_filter_width=64,
         rolloff=0.9475937167399596,
-        resampling_method="sinc_interp_kaiser",
+        # resampling_method="sinc_interp_kaiser",
         beta=14.769656459379492,
     )
 
@@ -150,13 +142,9 @@ def generate_samples(
             speaker_2 = torch.LongTensor([s[1] for s in speakers_batch])
 
             phoneme_ids_by_batch = []
-            clip_indexes_by_batch = []
             for i in range(batch_size):
-                phoneme_ids, clip_phoneme_index = get_phonemes(
-                    voice, config, next(texts), verbose, min_phoneme_count
-                )
+                phoneme_ids = get_phonemes(voice, config, next(texts), verbose)
                 phoneme_ids_by_batch.append(phoneme_ids)
-                clip_indexes_by_batch.append(clip_phoneme_index)
 
             def right_pad_lists(lists):
                 max_length = max(len(lst) for lst in lists)
@@ -169,69 +157,24 @@ def generate_samples(
                 return padded_lists
 
             phoneme_ids_by_batch = right_pad_lists(phoneme_ids_by_batch)
-
-            if auto_reduce_batch_size:
-                oom_error = True
-                counter = 1
-                while oom_error is True:
-                    try:
-                        audio, phoneme_samples = generate_audio(
-                            torch_model,
-                            speaker_1[0 : batch_size // counter],
-                            speaker_2[0 : batch_size // counter],
-                            phoneme_ids_by_batch[0 : batch_size // counter],
-                            slerp_weight,
-                            noise_scale,
-                            noise_scale_w,
-                            length_scale,
-                            max_len,
-                        )
-                        oom_error = False
-                    except torch.cuda.OutOfMemoryError:
-                        torch.cuda.empty_cache()
-                        gc.collect()
-                        counter += 1  # reduce batch size to avoid OOM errors
-            else:
-                audio, phoneme_samples = generate_audio(
-                    torch_model,
-                    speaker_1,
-                    speaker_2,
-                    phoneme_ids_by_batch,
-                    slerp_weight,
-                    noise_scale,
-                    noise_scale_w,
-                    length_scale,
-                    max_len,
-                )
-
-            # Clip audio when using min_phoneme_count
-            for i, clip_phoneme_index in enumerate(clip_indexes_by_batch):
-                if clip_phoneme_index is not None:
-                    first_sample_idx = int(
-                        phoneme_samples[i].flatten()[:clip_phoneme_index-1].sum().item()
-                    )
-                    
-                    # Fill start of audio with silence until actual sample.
-                    # It will be removed in the next stage.
-                    audio[i, 0, :first_sample_idx] = 0
-
-                # Fill time after last speech with silence.
-                # It will be removed in the next stage
-                last_sample_idx = int(phoneme_samples[i].flatten().sum().item())
-                audio[i, 0, last_sample_idx+1:] = 0
+            audio = generate_audio(
+                torch_model,
+                speaker_1,
+                speaker_2,
+                phoneme_ids_by_batch,
+                slerp_weight,
+                noise_scale,
+                noise_scale_w,
+                length_scale,
+                max_len,
+            )
 
             # Resample audio
-            audio = resampler(audio.cpu()).numpy()
+            audio_np = resampler(audio.cpu()).numpy()
 
-            audio_int16 = audio_float_to_int16(audio)
+            audio_int16 = audio_float_to_int16(audio_np)
             for audio_idx in range(audio_int16.shape[0]):
-                # Trim any silenced audio
                 audio_data = np.trim_zeros(audio_int16[audio_idx].flatten())
-                
-                # Use webrtcvad to trim any remaining silence from the clips
-                audio_data = remove_silence(audio_int16[audio_idx].flatten())[
-                    None,
-                ]
 
                 if isinstance(file_names, it.cycle):
                     wav_path = output_dir / next(file_names)
@@ -260,23 +203,107 @@ def generate_samples(
     _LOGGER.info("Done")
 
 
-def remove_silence(
-    x: np.ndarray,
-    frame_duration: float = 0.030,
-    sample_rate: int = 16000,
-    min_start: int = 2000,
-) -> np.ndarray:
-    """Uses webrtc voice activity detection to remove silence from the clips"""
-    vad = webrtcvad.Vad(0)
-    if x.dtype in (np.float32, np.float64):
-        x = (x * 32767).astype(np.int16)
-    x_new = x[0:min_start].tolist()
-    step_size = int(sample_rate * frame_duration)
-    for i in range(min_start, x.shape[0] - step_size, step_size):
-        vad_res = vad.is_speech(x[i : i + step_size].tobytes(), sample_rate)
-        if vad_res:
-            x_new.extend(x[i : i + step_size].tolist())
-    return np.array(x_new).astype(np.int16)
+# -----------------------------------------------------------------------------
+
+
+def generate_samples_onnx(
+    text: Union[List[str], str],
+    output_dir: Union[str, Path],
+    model: Union[str, Path],
+    max_samples: Optional[int] = None,
+    file_names: Optional[Iterable[str]] = None,
+    length_scales: Tuple[float, ...] = (0.75, 1, 1.25),
+    noise_scales: Tuple[float, ...] = (0.667,),
+    noise_scale_ws: Tuple[float, ...] = (0.8,),
+    max_speakers: Optional[int] = None,
+    **kwargs,
+) -> None:
+    """
+    Generate synthetic speech clips, saving the clips to the specified output directory.
+
+    Args:
+        text (List[str]): The text to convert into speech. Can be either a
+                          a list of strings, or a path to a file with text on each line.
+        output_dir (str): The location to save the generated clips.
+        model (str): The path to the Piper TTS model (.onnx).
+        max_samples (int): The maximum number of samples to generate.
+        file_names (List[str]): The names to use when saving the files. Must be the same length
+                                as the `text` argument, if a list.
+        length_scales (List[float]): Controls the average duration/speed of the generated speech.
+        noise_scales (List[float]): A parameter for overall variability of the generated speech.
+        noise_scale_ws (List[float]): A parameter for the stochastic duration of words/phonemes.
+        max_speakers (int): The maximum speaker number to use, if the model is multi-speaker.
+
+    Returns:
+        None
+    """
+
+    if max_samples is None:
+        max_samples = len(text)
+
+    _LOGGER.debug("Loading %s", model)
+    voice = PiperVoice.load(model, use_cuda=torch.cuda.is_available())
+    _LOGGER.info("Successfully loaded the model")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    num_speakers = voice.config.num_speakers
+    if max_speakers is not None:
+        num_speakers = min(num_speakers, max_speakers)
+
+    sample_idx = 0
+    settings_iter = it.cycle(
+        it.product(
+            list(range(num_speakers)),
+            length_scales,
+            noise_scales,
+            noise_scale_ws,
+        )
+    )
+
+    if isinstance(text, str) and os.path.exists(text):
+        texts = it.cycle(
+            [
+                i.strip()
+                for i in open(text, "r", encoding="utf-8").readlines()
+                if len(i.strip()) > 0
+            ]
+        )
+    elif isinstance(text, list):
+        texts = it.cycle(text)
+    else:
+        texts = it.cycle([text])
+
+    if file_names:
+        file_names = it.cycle(file_names)
+
+    for speaker_id, length_scale, noise_scale, noise_w_scale in settings_iter:
+        if isinstance(file_names, it.cycle):
+            wav_path = output_dir / next(file_names)
+        else:
+            wav_path = output_dir / f"{sample_idx}.wav"
+
+        wav_file: wave.Wave_write = wave.open(str(wav_path), "wb")
+        voice.synthesize_wav(
+            next(texts),
+            wav_file=wav_file,
+            syn_config=SynthesisConfig(
+                speaker_id=speaker_id,
+                length_scale=length_scale,
+                noise_scale=noise_scale,
+                noise_w_scale=noise_w_scale,
+            ),
+        )
+
+        sample_idx += 1
+        if sample_idx >= max_samples:
+            break
+
+    _LOGGER.info("Done")
+
+
+# -----------------------------------------------------------------------------
 
 
 def generate_audio(
@@ -289,15 +316,15 @@ def generate_audio(
     noise_scale_w,
     length_scale,
     max_len,
-):
+) -> torch.FloatTensor:
     x = torch.LongTensor(phoneme_ids)
     x_lengths = torch.LongTensor([len(i) for i in phoneme_ids])
 
     if torch.cuda.is_available():
         speaker_1 = speaker_1.cuda()
         speaker_2 = speaker_2.cuda()
-        x = x.cuda()
-        x_lengths = x_lengths.cuda()
+        x = cast(torch.LongTensor, x.cuda())
+        x_lengths = cast(torch.LongTensor, x_lengths.cuda())
 
     x, m_p_orig, logs_p_orig, x_mask = model.enc_p(x, x_lengths)
     emb0 = model.emb_g(speaker_1)
@@ -312,7 +339,7 @@ def generate_audio(
     w_ceil = torch.ceil(w)
     y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
     y_mask = torch.unsqueeze(
-        commons.sequence_mask(y_lengths, y_lengths.max()), 1
+        commons.sequence_mask(y_lengths, int(y_lengths.max().item())), 1
     ).type_as(x_mask)
     attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
     attn = commons.generate_path(w_ceil, attn_mask)
@@ -329,9 +356,11 @@ def generate_audio(
     o = model.dec((z * y_mask)[:, :, :max_len], g=g)
 
     audio = o
-    phoneme_samples = w_ceil * 256  # hop length
 
-    return audio, phoneme_samples
+    return audio
+
+
+_PHONEMIZER = EspeakPhonemizer()
 
 
 def get_phonemes(
@@ -339,12 +368,11 @@ def get_phonemes(
     config: Dict[str, Any],
     text: str,
     verbose: bool = False,
-    min_phoneme_count: Optional[int] = None,
-) -> Tuple[List[int], Optional[int]]:
+) -> List[int]:
     # Combine all sentences
     phonemes = [
         p
-        for sentence_phonemes in phonemize_espeak(text, voice)
+        for sentence_phonemes in _PHONEMIZER.phonemize(voice, text)
         for p in sentence_phonemes
     ]
     if verbose is True:
@@ -367,23 +395,10 @@ def get_phonemes(
             phoneme_ids.extend(id_map["_"])
             text_phoneme_ids.extend(id_map["_"])
 
-    # Index where audio should be clipped at.
-    # When None, all of the audio will be used.
-    clip_phoneme_index: Optional[int] = None
-
-    if min_phoneme_count is not None:
-        # Repeat phrase until minimum phoneme count is met.
-        # NOTE: It is critical that the ^ and $ phonemes are not repeated here.
-        while (len(phoneme_ids) - 1) < min_phoneme_count:
-            # We will clip audio at the beginning of the last phrase
-            clip_phoneme_index = len(phoneme_ids) - 1
-
-            phoneme_ids.extend(text_phoneme_ids)
-
     # End of utterance
     phoneme_ids.extend(id_map["$"])
 
-    return phoneme_ids, clip_phoneme_index
+    return phoneme_ids
 
 
 def slerp(v1, v2, t: float, DOT_THR: float = 0.9995, zdim: int = -1):
@@ -441,6 +456,9 @@ def audio_float_to_int16(
     return audio_norm
 
 
+# -----------------------------------------------------------------------------
+
+
 def main() -> None:
     """Main entry point."""
 
@@ -469,12 +487,17 @@ def main() -> None:
         type=int,
         help="Maximum number of speakers to use (default: all)",
     )
-    parser.add_argument("--min-phoneme-count", type=int)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args().__dict__
 
     # Generate speech
-    generate_samples(**args)
+    model_path = Path(args["model"])
+    if model_path.suffix == ".onnx":
+        # Use Piper voice (.onnx)
+        generate_samples_onnx(**args)
+    else:
+        # Use PyTorch generator (.pt)
+        generate_samples(**args)
 
 
 if __name__ == "__main__":
