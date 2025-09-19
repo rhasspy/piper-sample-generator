@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import gc
 import itertools as it
 import json
 import logging
@@ -75,6 +76,10 @@ def generate_samples(
     if torch.cuda.is_available():
         torch_model.cuda()
         _LOGGER.debug("CUDA available, using GPU")
+    elif torch.backends.mps.is_available():
+        mps_device = torch.device("mps")
+        torch_model.to(mps_device)
+        _LOGGER.debug("MPS available, using GPU")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -168,6 +173,11 @@ def generate_samples(
                 audio[i, 0, last_sample_idx+1:] = 0
 
             audio = audio.cpu().numpy()
+
+            if torch.backends.mps.is_available():
+                # There seems to be a memory leak if we don't empty the cache after each batch with mps
+                torch.mps.empty_cache()
+                gc.collect()
 
             audio_int16 = audio_float_to_int16(audio)
             for audio_idx in range(audio_int16.shape[0]):
@@ -371,6 +381,12 @@ def generate_audio(
         speaker_2 = speaker_2.cuda()
         x = cast(torch.LongTensor, x.cuda())
         x_lengths = cast(torch.LongTensor, x_lengths.cuda())
+    elif torch.backends.mps.is_available():
+        mps_device = torch.device("mps")
+        speaker_1 = speaker_1.to(mps_device)
+        speaker_2 = speaker_2.to(mps_device)
+        x = x.to(mps_device)
+        x_lengths = x_lengths.to(mps_device)
 
     x, m_p_orig, logs_p_orig, x_mask = model.enc_p(x, x_lengths)
     emb0 = model.emb_g(speaker_1)
