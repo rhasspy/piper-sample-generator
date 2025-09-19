@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.1.0
+
+- Support MPS acceleration on Apple Silicon
+- Add `--phoneme-input` flag
+
 ## 3.0.0
 
 - Move phonemization to piper 1.3.0 (piper-phonemize is deprecated)

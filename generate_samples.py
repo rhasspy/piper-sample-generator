@@ -5,6 +5,7 @@ import itertools as it
 import json
 import logging
 import os
+import unicodedata
 import wave
 from collections.abc import Iterable
 from pathlib import Path
@@ -12,13 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import torch
-import torchaudio
 from piper import PiperVoice, SynthesisConfig
 from piper.phonemize_espeak import EspeakPhonemizer
 
 from piper_train.vits import commons
 
-_DIR = Path(__file__).parent
 _LOGGER = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
@@ -139,7 +138,9 @@ def generate_samples(
 
             phoneme_ids_by_batch = []
             for i in range(batch_size):
-                phoneme_ids = get_phonemes(voice, config, next(texts), verbose, phoneme_input)
+                phoneme_ids = get_phonemes(
+                    voice, config, next(texts), verbose, phoneme_input
+                )
                 phoneme_ids_by_batch.append(phoneme_ids)
 
             def right_pad_lists(lists):
@@ -170,16 +171,16 @@ def generate_samples(
                 # Fill time after last speech with silence (zeros)
                 # It will be removed in the next stage with np.trim_zeros
                 last_sample_idx = int(phoneme_samples[i].flatten().sum().item())
-                audio[i, 0, last_sample_idx+1:] = 0
+                audio[i, 0, last_sample_idx + 1 :] = 0
 
-            audio = audio.cpu().numpy()
+            audio_numpy = audio.cpu().numpy()
 
             if torch.backends.mps.is_available():
                 # There seems to be a memory leak if we don't empty the cache after each batch with mps
                 torch.mps.empty_cache()
                 gc.collect()
 
-            audio_int16 = audio_float_to_int16(audio)
+            audio_int16 = audio_float_to_int16(audio_numpy)
             for audio_idx in range(audio_int16.shape[0]):
                 audio_data = np.trim_zeros(audio_int16[audio_idx].flatten())
 
@@ -301,14 +302,14 @@ def generate_samples_onnx(
 
             if phoneme_input:
                 # For ONNX models with phoneme input, build phoneme IDs manually
-                phonemes = [p for p in list(text_input)]
+                phonemes = list(unicodedata.normalize("NFD", text_input))
 
                 # Build phoneme IDs similar to get_phonemes function
                 id_map = voice.config.phoneme_id_map
 
                 # Beginning of utterance
                 phoneme_ids = list(id_map.get("^", [1]))  # Default to [1] if not found
-                phoneme_ids.extend(id_map.get("_", [0]))   # Default to [0] if not found
+                phoneme_ids.extend(id_map.get("_", [0]))  # Default to [0] if not found
 
                 # Add phonemes
                 for phoneme in phonemes:
@@ -317,7 +318,9 @@ def generate_samples_onnx(
                         phoneme_ids.extend(p_ids)
                         phoneme_ids.extend(id_map.get("_", [0]))
                     else:
-                        _LOGGER.debug(f"Phoneme '{phoneme}' not found in model's phoneme map")
+                        _LOGGER.warning(
+                            "Phoneme '%s' not found in model's phoneme map", phoneme
+                        )
 
                 # End of utterance
                 phoneme_ids.extend(id_map.get("$", [2]))  # Default to [2] if not found
@@ -340,17 +343,17 @@ def generate_samples_onnx(
                     wav_file.setnchannels(1)
                     wav_file.writeframes(audio_int16.flatten())
             else:
-                wav_file: wave.Wave_write = wave.open(str(wav_path), "wb")
-                voice.synthesize_wav(
-                    text_input,
-                    wav_file=wav_file,
-                    syn_config=SynthesisConfig(
-                        speaker_id=speaker_id,
-                        length_scale=length_scale,
-                        noise_scale=noise_scale,
-                        noise_w_scale=noise_w_scale,
-                    ),
-                )
+                with wave.open(str(wav_path), "wb") as wav_file:
+                    voice.synthesize_wav(
+                        text_input,
+                        wav_file=wav_file,
+                        syn_config=SynthesisConfig(
+                            speaker_id=speaker_id,
+                            length_scale=length_scale,
+                            noise_scale=noise_scale,
+                            noise_w_scale=noise_w_scale,
+                        ),
+                    )
 
             sample_idx += 1
             if sample_idx >= max_samples:
@@ -385,8 +388,8 @@ def generate_audio(
         mps_device = torch.device("mps")
         speaker_1 = speaker_1.to(mps_device)
         speaker_2 = speaker_2.to(mps_device)
-        x = x.to(mps_device)
-        x_lengths = x_lengths.to(mps_device)
+        x = cast(torch.LongTensor, x.to(mps_device))
+        x_lengths = cast(torch.LongTensor, x_lengths.to(mps_device))
 
     x, m_p_orig, logs_p_orig, x_mask = model.enc_p(x, x_lengths)
     emb0 = model.emb_g(speaker_1)
@@ -417,8 +420,8 @@ def generate_audio(
     z = model.flow(z_p, y_mask, g=g, reverse=True)
     o = model.dec((z * y_mask)[:, :, :max_len], g=g)
 
-    audio = o
-    phoneme_samples = w_ceil * 256  # hop length
+    audio = cast(torch.FloatTensor, o)
+    phoneme_samples = cast(torch.FloatTensor, w_ceil * 256)  # hop length
 
     return audio, phoneme_samples
 
@@ -435,7 +438,7 @@ def get_phonemes(
 ) -> List[int]:
     # Combine all sentences
     if phoneme_input:
-        phonemes = [p for p in list(text)]
+        phonemes = list(unicodedata.normalize("NFD", text))
     else:
         phonemes = [
             p
@@ -585,7 +588,9 @@ def main() -> int:
         type=int,
         help="Maximum number of speakers to use (default: no limit)",
     )
-    parser.add_argument("--phoneme-input", action="store_true", help="Treat input text as phoneme input")
+    parser.add_argument(
+        "--phoneme-input", action="store_true", help="Treat input text as phoneme input"
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args().__dict__
 
