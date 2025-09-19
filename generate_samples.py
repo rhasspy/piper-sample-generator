@@ -37,6 +37,7 @@ def generate_samples(
     noise_scale_ws: Tuple[float, ...] = (0.8,),
     max_speakers: Optional[int] = None,
     verbose: bool = False,
+    phoneme_input: bool = False,
     **kwargs,
 ) -> None:
     """
@@ -57,6 +58,7 @@ def generate_samples(
         noise_scale_ws (List[float]): A parameter for the stochastic duration of words/phonemes.
         max_speakers (int): The maximum speaker number to use, if the model is multi-speaker.
         verbose (bool): Enable or disable more detailed logging messages (default: False).
+        phoneme_input (bool): Set to indicate given input text is phoneme input.
     Returns:
         None
     """
@@ -137,7 +139,7 @@ def generate_samples(
 
             phoneme_ids_by_batch = []
             for i in range(batch_size):
-                phoneme_ids = get_phonemes(voice, config, next(texts), verbose)
+                phoneme_ids = get_phonemes(voice, config, next(texts), verbose, phoneme_input)
                 phoneme_ids_by_batch.append(phoneme_ids)
 
             def right_pad_lists(lists):
@@ -151,21 +153,26 @@ def generate_samples(
                 return padded_lists
 
             phoneme_ids_by_batch = right_pad_lists(phoneme_ids_by_batch)
-            audio = (
-                generate_audio(
-                    torch_model,
-                    speaker_1,
-                    speaker_2,
-                    phoneme_ids_by_batch,
-                    slerp_weight,
-                    noise_scale,
-                    noise_scale_w,
-                    length_scale,
-                    max_len,
-                )
-                .cpu()
-                .numpy()
+            audio, phoneme_samples = generate_audio(
+                torch_model,
+                speaker_1,
+                speaker_2,
+                phoneme_ids_by_batch,
+                slerp_weight,
+                noise_scale,
+                noise_scale_w,
+                length_scale,
+                max_len,
             )
+
+            # Trim audio to actual length based on phoneme samples
+            for i in range(audio.shape[0]):
+                # Fill time after last speech with silence (zeros)
+                # It will be removed in the next stage with np.trim_zeros
+                last_sample_idx = int(phoneme_samples[i].flatten().sum().item())
+                audio[i, 0, last_sample_idx+1:] = 0
+
+            audio = audio.cpu().numpy()
 
             if torch.backends.mps.is_available():
                 # There seems to be a memory leak if we don't empty the cache after each batch with mps
@@ -216,6 +223,7 @@ def generate_samples_onnx(
     noise_scales: Tuple[float, ...] = (0.667,),
     noise_scale_ws: Tuple[float, ...] = (0.8,),
     max_speakers: Optional[int] = None,
+    phoneme_input: bool = False,
     **kwargs,
 ) -> None:
     """
@@ -233,6 +241,7 @@ def generate_samples_onnx(
         noise_scales (List[float]): A parameter for overall variability of the generated speech.
         noise_scale_ws (List[float]): A parameter for the stochastic duration of words/phonemes.
         max_speakers (int): The maximum speaker number to use, if the model is multi-speaker.
+        phoneme_input (bool): Set to indicate given input text is phoneme input.
 
     Returns:
         None
@@ -288,17 +297,60 @@ def generate_samples_onnx(
             else:
                 wav_path = output_dir / f"{sample_idx}.wav"
 
-            wav_file: wave.Wave_write = wave.open(str(wav_path), "wb")
-            voice.synthesize_wav(
-                next(texts),
-                wav_file=wav_file,
-                syn_config=SynthesisConfig(
+            text_input = next(texts)
+
+            if phoneme_input:
+                # For ONNX models with phoneme input, build phoneme IDs manually
+                phonemes = [p for p in list(text_input)]
+
+                # Build phoneme IDs similar to get_phonemes function
+                id_map = voice.config.phoneme_id_map
+
+                # Beginning of utterance
+                phoneme_ids = list(id_map.get("^", [1]))  # Default to [1] if not found
+                phoneme_ids.extend(id_map.get("_", [0]))   # Default to [0] if not found
+
+                # Add phonemes
+                for phoneme in phonemes:
+                    p_ids = id_map.get(phoneme)
+                    if p_ids is not None:
+                        phoneme_ids.extend(p_ids)
+                        phoneme_ids.extend(id_map.get("_", [0]))
+                    else:
+                        _LOGGER.debug(f"Phoneme '{phoneme}' not found in model's phoneme map")
+
+                # End of utterance
+                phoneme_ids.extend(id_map.get("$", [2]))  # Default to [2] if not found
+
+                # Generate audio from phoneme IDs
+                syn_config = SynthesisConfig(
                     speaker_id=speaker_id,
                     length_scale=length_scale,
                     noise_scale=noise_scale,
                     noise_w_scale=noise_w_scale,
-                ),
-            )
+                )
+                audio = voice.phoneme_ids_to_audio(phoneme_ids, syn_config)
+
+                # Convert to int16 and write to WAV
+                audio_int16 = audio_float_to_int16(audio[np.newaxis, :])
+                wav_file: wave.Wave_write = wave.open(str(wav_path), "wb")
+                with wav_file:
+                    wav_file.setframerate(voice.config.sample_rate)
+                    wav_file.setsampwidth(2)
+                    wav_file.setnchannels(1)
+                    wav_file.writeframes(audio_int16.flatten())
+            else:
+                wav_file: wave.Wave_write = wave.open(str(wav_path), "wb")
+                voice.synthesize_wav(
+                    text_input,
+                    wav_file=wav_file,
+                    syn_config=SynthesisConfig(
+                        speaker_id=speaker_id,
+                        length_scale=length_scale,
+                        noise_scale=noise_scale,
+                        noise_w_scale=noise_w_scale,
+                    ),
+                )
 
             sample_idx += 1
             if sample_idx >= max_samples:
@@ -320,7 +372,7 @@ def generate_audio(
     noise_scale_w,
     length_scale,
     max_len,
-) -> torch.FloatTensor:
+) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
     x = torch.LongTensor(phoneme_ids)
     x_lengths = torch.LongTensor([len(i) for i in phoneme_ids])
 
@@ -366,8 +418,9 @@ def generate_audio(
     o = model.dec((z * y_mask)[:, :, :max_len], g=g)
 
     audio = o
+    phoneme_samples = w_ceil * 256  # hop length
 
-    return audio
+    return audio, phoneme_samples
 
 
 _PHONEMIZER = EspeakPhonemizer()
@@ -378,13 +431,17 @@ def get_phonemes(
     config: Dict[str, Any],
     text: str,
     verbose: bool = False,
+    phoneme_input: bool = False,
 ) -> List[int]:
     # Combine all sentences
-    phonemes = [
-        p
-        for sentence_phonemes in _PHONEMIZER.phonemize(voice, text)
-        for p in sentence_phonemes
-    ]
+    if phoneme_input:
+        phonemes = [p for p in list(text)]
+    else:
+        phonemes = [
+            p
+            for sentence_phonemes in _PHONEMIZER.phonemize(voice, text)
+            for p in sentence_phonemes
+        ]
     if verbose is True:
         _LOGGER.debug("Phonemes: %s", phonemes)
 
@@ -528,6 +585,7 @@ def main() -> int:
         type=int,
         help="Maximum number of speakers to use (default: no limit)",
     )
+    parser.add_argument("--phoneme-input", action="store_true", help="Treat input text as phoneme input")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args().__dict__
 
