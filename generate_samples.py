@@ -108,7 +108,7 @@ def generate_samples(
 
     speakers_iter = it.cycle(it.product(range(num_speakers), range(num_speakers)))
     speakers_batch = list(it.islice(speakers_iter, 0, batch_size))
-    if isinstance(text, str) and os.path.exists(text):
+    if isinstance(text, str) and os.path.isfile(text):
         texts = it.cycle(
             [
                 i.strip()
