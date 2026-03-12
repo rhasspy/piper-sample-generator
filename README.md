@@ -6,16 +6,8 @@ Supports normal [Piper voices][piper voices] or a special [generator][] that can
 
 ## Install
 
-Create a virtual environment and install the requirements:
-
 ``` sh
-git clone https://github.com/rhasspy/piper-sample-generator.git
-cd piper-sample-generator/
-
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -e .
+pip install piper-sample-generator
 ```
 
 ## Piper Voices
