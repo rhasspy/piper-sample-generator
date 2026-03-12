@@ -40,3 +40,6 @@ zip-safe  = true
 
 [tool.setuptools.packages.find]
 include = ["piper_sample_generator*"]
+
+[tool.setuptools.package-data]
+piper_sample_generator = ["impulses/*.wav"]
