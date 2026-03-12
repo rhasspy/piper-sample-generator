@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.0
+
+- Refactor as `piper_sample_generator` package
+
 ## 3.1.0
 
 - Support MPS acceleration on Apple Silicon

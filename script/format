@@ -6,7 +6,7 @@ from pathlib import Path
 _DIR = Path(__file__).parent
 _PROGRAM_DIR = _DIR.parent
 _VENV_DIR = _PROGRAM_DIR / ".venv"
-_SCRIPT = _PROGRAM_DIR / "generate_samples.py"
+_MODULE_DIR = _PROGRAM_DIR / "piper_sample_generator"
 
 if _VENV_DIR.exists():
     context = venv.EnvBuilder().ensure_directories(_VENV_DIR)
@@ -14,5 +14,5 @@ if _VENV_DIR.exists():
 else:
     python_exe = "python3"
 
-subprocess.check_call([python_exe, "-m", "black", str(_SCRIPT)])
-subprocess.check_call([python_exe, "-m", "isort", str(_SCRIPT)])
+subprocess.check_call([python_exe, "-m", "black", str(_MODULE_DIR)])
+subprocess.check_call([python_exe, "-m", "isort", str(_MODULE_DIR)])

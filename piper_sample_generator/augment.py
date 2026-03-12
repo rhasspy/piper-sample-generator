@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import audioop
-import sys
 import wave
 from pathlib import Path
 
 import numpy as np
-from audiomentations import Compose, ApplyImpulseResponse, Gain
+from audiomentations import ApplyImpulseResponse, Compose, Gain
 
 _DIR = Path(__file__).parent
 
@@ -35,9 +34,10 @@ def main() -> None:
         output_wav = output_dir / (input_wav.relative_to(input_dir))
         output_wav.parent.mkdir(parents=True, exist_ok=True)
 
-        with wave.open(str(input_wav), "rb") as input_wav_file, wave.open(
-            str(output_wav), "wb"
-        ) as output_wav_file:
+        with (
+            wave.open(str(input_wav), "rb") as input_wav_file,
+            wave.open(str(output_wav), "wb") as output_wav_file,
+        ):
             assert input_wav_file.getsampwidth() == 2
             assert input_wav_file.getnchannels() == 1
 

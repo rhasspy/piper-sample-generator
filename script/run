@@ -14,4 +14,4 @@ if _VENV_DIR.exists():
 else:
     python_exe = "python3"
 
-subprocess.check_call([python_exe, "generate_samples.py"] + sys.argv[1:])
+subprocess.check_call([python_exe, "-m", "piper_sample_generator"] + sys.argv[1:])
