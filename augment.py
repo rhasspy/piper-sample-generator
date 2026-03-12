@@ -15,7 +15,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("input_dir")
     parser.add_argument("output_dir")
-    parser.add_argument("--sample-rate", type=int)
+    parser.add_argument("--sample-rate", type=int, required=True)
     args = parser.parse_args()
 
     impulses = list((_DIR / "impulses").glob("*.wav"))
